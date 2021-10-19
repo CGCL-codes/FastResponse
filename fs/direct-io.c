@@ -38,6 +38,7 @@
 #include <linux/uio.h>
 #include <linux/atomic.h>
 #include <linux/prefetch.h>
+#include <linux/printk.h>
 
 /*
  * How many user pages to map in one call to get_user_pages().  This determines
@@ -440,7 +441,13 @@ dio_bio_alloc(struct dio *dio, struct dio_submit *sdio,
 
 	bio_set_dev(bio, bdev);
 	bio->bi_iter.bi_sector = first_sector;
-	bio_set_op_attrs(bio, dio->op, dio->op_flags);
+	if(current->critical){
+		bio_set_op_attrs(bio, dio->op, dio->op_flags | REQ_CRITICAL);	
+	}
+	else
+		bio_set_op_attrs(bio, dio->op, dio->op_flags);
+	//bio->critical = current->critical;
+	bio->task_id = current->pid;
 	if (dio->is_async)
 		bio->bi_end_io = dio_bio_end_aio;
 	else
@@ -1251,6 +1258,11 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 		dio->is_async = true;
 
 	dio->inode = inode;
+	/*printk(KERN_DEBUG
+			"do_blockdev_direct_IO: current=%d critical=%u\n",
+			current->pid, current->critical);*/
+	if (current->critical)
+		dio->op_flags |= REQ_CRITICAL;
 	if (iov_iter_rw(iter) == WRITE) {
 		dio->op = REQ_OP_WRITE;
 		dio->op_flags = REQ_SYNC | REQ_IDLE;

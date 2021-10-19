@@ -44,6 +44,7 @@
 #include <linux/backing-dev.h>
 #include <linux/pagevec.h>
 #include <linux/cleancache.h>
+#include <linux/printk.h>
 
 #include "ext4.h"
 
@@ -259,8 +260,16 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			bio->bi_iter.bi_sector = blocks[0] << (blkbits - 9);
 			bio->bi_end_io = mpage_end_io;
 			bio->bi_private = ctx;
-			bio_set_op_attrs(bio, REQ_OP_READ,
-						is_readahead ? REQ_RAHEAD : 0);
+			//bio->critical = mapping->critical; //
+			bio->task_id = current->pid;
+			/*printk(KERN_DEBUG
+				   "ext4_mpage_readpages: set bio critical! current=%d critical=%u, mapping->critical=xxx\n",
+				   current->pid, current->critical);*/
+			if (is_readahead)
+				op_flags |= REQ_RAHEAD;
+			if (current->critical)
+				op_flags |= REQ_CRITICAL;
+			bio_set_op_attrs(bio, REQ_OP_READ, op_flags);
 		}
 
 		length = first_hole << blkbits;

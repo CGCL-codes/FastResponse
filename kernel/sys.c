@@ -73,6 +73,8 @@
 
 #include "uid16.h"
 
+#include <linux/printk.h>
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -325,6 +327,58 @@ out_unlock:
 	read_unlock(&tasklist_lock);
 	rcu_read_unlock();
 
+	return retval;
+}
+
+/*
+ * sys_set_io_critical
+ * @critical: the task_struct io is critical or not. 1 is critical, and 0 is non-critical 
+ */
+SYSCALL_DEFINE2(set_io_critical, pid_t, pid, unsigned int, critical)
+{
+	struct task_struct *p;
+	int retval;
+
+	if (pid < 0)
+		return -EINVAL;
+
+	retval = -ESRCH;
+
+	rcu_read_lock();
+	p = find_task_by_vpid(pid);
+	if (p) {
+		p->critical = critical;
+		printk(KERN_DEBUG
+				"set_io_critical:p->pid=%d, critical=%u\n", 
+				p->pid, critical);
+		retval = 0;
+	}
+	rcu_read_unlock();
+	return retval;
+}
+
+/*
+ * sys_get_io_critical 
+ */
+SYSCALL_DEFINE1(get_io_critical, pid_t, pid)
+{
+	struct task_struct *p;
+	int retval;
+
+	if (pid < 0)
+		return -EINVAL;
+
+	retval = -ESRCH;
+
+	rcu_read_lock();
+	p = find_task_by_vpid(pid);
+	if (p) {
+		printk(KERN_DEBUG
+				"get_io_critical:current->pid=%d, critical=%u\n", 
+				p->pid, p->critical);
+		retval = p->critical;
+	}
+	rcu_read_unlock();
 	return retval;
 }
 

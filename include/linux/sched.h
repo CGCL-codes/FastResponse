@@ -471,6 +471,8 @@ struct sched_entity {
 
 	struct sched_statistics		statistics;
 
+	int critical;
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	int				depth;
 	struct sched_entity		*parent;
@@ -1019,6 +1021,8 @@ struct task_struct {
 	struct backing_dev_info		*backing_dev_info;
 
 	struct io_context		*io_context;
+
+	unsigned int			critical;
 
 #ifdef CONFIG_COMPACTION
 	struct capture_control		*capture_control;

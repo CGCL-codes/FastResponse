@@ -7,6 +7,7 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/scatterlist.h>
+#include <linux/printk.h>
 
 #include <trace/events/block.h>
 
@@ -737,6 +738,9 @@ static struct request *attempt_merge(struct request_queue *q,
 	if (next->start_time_ns < req->start_time_ns)
 		req->start_time_ns = next->start_time_ns;
 
+	if (next->bio_to_rq_time_ns >= req->bio_to_rq_time_ns)
+		req->bio_to_rq_time_ns = next->bio_to_rq_time_ns;
+
 	req->biotail->bi_next = next->bio;
 	req->biotail = next->biotail;
 
@@ -803,7 +807,7 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	/* different data direction or already started, don't merge */
 	if (bio_data_dir(bio) != rq_data_dir(rq))
 		return false;
-
+	
 	/* must be same device */
 	if (rq->rq_disk != bio->bi_disk)
 		return false;

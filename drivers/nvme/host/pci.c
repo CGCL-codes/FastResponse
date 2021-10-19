@@ -906,7 +906,7 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 
 	blk_mq_start_request(req);
-	nvme_submit_cmd(nvmeq, &cmnd, bd->last);
+	nvme_submit_cmd(nvmeq, &cmnd, bd->last || op_is_critical(req->cmd_flags));
 	return BLK_STS_OK;
 out_unmap_data:
 	nvme_unmap_data(dev, req);

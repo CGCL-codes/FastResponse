@@ -198,6 +198,9 @@ struct request {
 	u64 start_time_ns;
 	/* Time that I/O was submitted to the device. */
 	u64 io_start_time_ns;
+	u64 bio_to_rq_time_ns;
+	u64 rq_dequeue_from_plug;
+	u64 rq_insert_into_queue;
 
 #ifdef CONFIG_BLK_WBT
 	unsigned short wbt_flags;
@@ -221,6 +224,9 @@ struct request {
 
 	unsigned short write_hint;
 	unsigned short ioprio;
+	//unsigned int critical; //
+	unsigned int task_id;
+	unsigned int task_group_id;
 
 	unsigned int extra_len;	/* length of alignment and padding */
 
@@ -999,10 +1005,11 @@ static inline unsigned int blk_queue_get_max_sectors(struct request_queue *q,
 static inline unsigned int blk_max_size_offset(struct request_queue *q,
 					       sector_t offset)
 {
+	unsigned int critical = current->critical;
 	if (!q->limits.chunk_sectors)
-		return q->limits.max_sectors;
+		return critical == 1 ? q->limits.max_hw_sectors : q->limits.max_sectors;
 
-	return min(q->limits.max_sectors, (unsigned int)(q->limits.chunk_sectors -
+	return min(critical == 1 ? q->limits.max_hw_sectors : q->limits.max_sectors, (unsigned int)(q->limits.chunk_sectors -
 			(offset & (q->limits.chunk_sectors - 1))));
 }
 
@@ -1147,6 +1154,7 @@ struct blk_plug {
 	struct list_head cb_list; /* md requires an unplug callback */
 	unsigned short rq_count;
 	bool multiple_queues;
+	u64 start_plug_time;
 };
 #define BLK_MAX_REQUEST_COUNT 16
 #define BLK_PLUG_FLUSH_SIZE (128 * 1024)

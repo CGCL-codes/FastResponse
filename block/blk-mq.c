@@ -330,6 +330,9 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 	else
 		rq->start_time_ns = 0;
 	rq->io_start_time_ns = 0;
+	rq->bio_to_rq_time_ns = 0;
+	rq->rq_dequeue_from_plug = 0;
+	rq->rq_insert_into_queue = 0;
 	rq->stats_sectors = 0;
 	rq->nr_phys_segments = 0;
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
@@ -541,6 +544,19 @@ inline void __blk_mq_end_request(struct request *rq, blk_status_t error)
 
 	if (rq->internal_tag != -1)
 		blk_mq_sched_completed_request(rq, now);
+	
+	if(!rq->q->elevator){
+		if(rq->io_start_time_ns > rq->start_time_ns)
+		//group_id, task_id, critical, total_time, io_time, kernel_time, bio2rq, in_plug, plug2queue, int_queue op_is_critical(rq->cmd_flags)
+		printk(KERN_DEBUG
+			"none_end_request:%d %d %u %u %llu  %llu %llu %llu %llu %llu %llu %d %d\n",
+			rq->task_id, rq->task_group_id, op_is_critical(rq->cmd_flags), rq->__data_len, now - rq->start_time_ns, now - rq->io_start_time_ns, rq->io_start_time_ns - rq->start_time_ns,
+			rq->bio_to_rq_time_ns - rq->start_time_ns, rq->rq_dequeue_from_plug ? rq->rq_dequeue_from_plug - rq->bio_to_rq_time_ns : 0, rq->rq_insert_into_queue ? (rq->rq_insert_into_queue -rq->rq_dequeue_from_plug) : 0,
+			rq->rq_insert_into_queue ? rq->io_start_time_ns - rq->rq_insert_into_queue : (rq->rq_dequeue_from_plug ? rq->io_start_time_ns -rq->rq_dequeue_from_plug : rq->io_start_time_ns - rq->bio_to_rq_time_ns),
+			op_is_read(rq->cmd_flags), op_is_write(rq->cmd_flags));
+	}
+
+	rq->__data_len = 0;
 
 	blk_account_io_done(rq, now);
 
@@ -1679,6 +1695,8 @@ void blk_mq_insert_requests(struct blk_mq_hw_ctx *hctx, struct blk_mq_ctx *ctx,
 	 */
 	list_for_each_entry(rq, list, queuelist) {
 		BUG_ON(rq->mq_ctx != ctx);
+		rq->rq_insert_into_queue = ktime_get_ns();
+//printk(KERN_DEBUG "blk_mq_insert_rq:%d", rq->task_group_id);
 		trace_block_rq_insert(hctx->queue, rq);
 	}
 
@@ -1729,6 +1747,7 @@ void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 
 	while (!list_empty(&list)) {
 		rq = list_entry_rq(list.next);
+		rq->rq_dequeue_from_plug = ktime_get_ns();
 		list_del_init(&rq->queuelist);
 		BUG_ON(!rq->q);
 		if (rq->mq_hctx != this_hctx || rq->mq_ctx != this_ctx) {
@@ -1768,6 +1787,9 @@ static void blk_mq_bio_to_request(struct request *rq, struct bio *bio,
 
 	rq->__sector = bio->bi_iter.bi_sector;
 	rq->write_hint = bio->bi_write_hint;
+	rq->task_id = bio->task_id;
+	rq->task_group_id = bio->task_group_id;
+	rq->bio_to_rq_time_ns = ktime_get_ns();
 	blk_rq_bio_prep(rq, bio, nr_segs);
 
 	blk_account_io_start(rq, true);
@@ -1778,6 +1800,7 @@ static blk_status_t __blk_mq_issue_directly(struct blk_mq_hw_ctx *hctx,
 					    blk_qc_t *cookie, bool last)
 {
 	struct request_queue *q = rq->q;
+	struct elevator_queue *e = hctx->queue->elevator;
 	struct blk_mq_queue_data bd = {
 		.rq = rq,
 		.last = last,
@@ -1786,6 +1809,11 @@ static blk_status_t __blk_mq_issue_directly(struct blk_mq_hw_ctx *hctx,
 	blk_status_t ret;
 
 	new_cookie = request_to_qc_t(hctx, rq);
+	bool critical = op_is_critical(rq->cmd_flags);
+
+	if (e && e->type->ops.prepare_token && critical){
+		e->type->ops.prepare_token(hctx, rq);
+	}
 
 	/*
 	 * For OK queue, we are done. For error, caller may kill it.
@@ -1858,13 +1886,15 @@ static void blk_mq_try_issue_directly(struct blk_mq_hw_ctx *hctx,
 {
 	blk_status_t ret;
 	int srcu_idx;
+	bool bypass_insert = op_is_critical(rq->cmd_flags) ? true : false;
 
 	might_sleep_if(hctx->flags & BLK_MQ_F_BLOCKING);
 
 	hctx_lock(hctx, &srcu_idx);
 
-	ret = __blk_mq_try_issue_directly(hctx, rq, cookie, false, true);
-	if (ret == BLK_STS_RESOURCE || ret == BLK_STS_DEV_RESOURCE)
+	ret = __blk_mq_try_issue_directly(hctx, rq, cookie, bypass_insert, true);
+	if (ret == BLK_STS_RESOURCE || ret == BLK_STS_DEV_RESOURCE){
+	//printk(KERN_DEBUG "will insert the ctx:%u", rq->task_group_id);
 		blk_mq_request_bypass_insert(rq, true);
 	else if (ret != BLK_STS_OK)
 		blk_mq_end_request(rq, ret);
@@ -1978,7 +2008,11 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 		/* bypass scheduler for flush rq */
 		blk_insert_flush(rq);
 		blk_mq_run_hw_queue(data.hctx, true);
-	} else if (plug && (q->nr_hw_queues == 1 || q->mq_ops->commit_rqs)) {
+	}
+	else if (op_is_critical(rq->cmd_flags) && data.hctx->queue->elevator && !strcmp(data.hctx->queue->elevator->type->elevator_name, "limited-depth")){
+		blk_mq_try_issue_directly(data.hctx, rq, &cookie);
+	} 
+	else if (plug && (q->nr_hw_queues == 1 || q->mq_ops->commit_rqs)) {
 		/*
 		 * Use plugging if we have a ->commit_rqs() hook as well, as
 		 * we know the driver uses bd->last in a smart fashion.

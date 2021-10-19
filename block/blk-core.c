@@ -609,6 +609,9 @@ bool bio_attempt_back_merge(struct request *req, struct bio *bio,
 	req->biotail = bio;
 	req->__data_len += bio->bi_iter.bi_size;
 
+	if (op_is_critical(bio->bi_opf))
+		req->cmd_flags |= REQ_CRITICAL;
+
 	blk_account_io_start(req, false);
 	return true;
 }
@@ -632,6 +635,9 @@ bool bio_attempt_front_merge(struct request *req, struct bio *bio,
 	req->__sector = bio->bi_iter.bi_sector;
 	req->__data_len += bio->bi_iter.bi_size;
 
+	if (op_is_critical(bio->bi_opf))
+		req->cmd_flags |= REQ_CRITICAL;
+
 	blk_account_io_start(req, false);
 	return true;
 }
@@ -651,6 +657,9 @@ bool bio_attempt_discard_merge(struct request_queue *q, struct request *req,
 	req->biotail = bio;
 	req->__data_len += bio->bi_iter.bi_size;
 	req->nr_phys_segments = segments + 1;
+
+	if (op_is_critical(bio->bi_opf))
+		req->cmd_flags |= REQ_CRITICAL;
 
 	blk_account_io_start(req, false);
 	return true;
@@ -1439,7 +1448,7 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		 * can find how many bytes remain in the request
 		 * later.
 		 */
-		req->__data_len = 0;
+//		req->__data_len = 0;
 		return false;
 	}
 
@@ -1669,6 +1678,7 @@ void blk_start_plug(struct blk_plug *plug)
 	INIT_LIST_HEAD(&plug->cb_list);
 	plug->rq_count = 0;
 	plug->multiple_queues = false;
+	plug->start_plug_time = ktime_get_ns();
 
 	/*
 	 * Store ordering should not be needed here, since a potential

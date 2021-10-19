@@ -3085,6 +3085,8 @@ static int submit_bh_wbc(int op, int op_flags, struct buffer_head *bh,
 		op_flags |= REQ_META;
 	if (buffer_prio(bh))
 		op_flags |= REQ_PRIO;
+	if (current->critical)
+                op_flags |= REQ_CRITICAL;
 	bio_set_op_attrs(bio, op, op_flags);
 
 	if (wbc) {

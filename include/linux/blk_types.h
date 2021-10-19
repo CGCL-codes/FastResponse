@@ -150,6 +150,9 @@ struct bio {
 						 */
 	unsigned short		bi_flags;	/* status, etc and bvec pool number */
 	unsigned short		bi_ioprio;
+	//unsigned int		critical; //
+	unsigned int 		task_id;
+	unsigned int		task_group_id;
 	unsigned short		bi_write_hint;
 	blk_status_t		bi_status;
 	u8			bi_partno;
@@ -328,6 +331,9 @@ enum req_flag_bits {
 	/* for driver use */
 	__REQ_DRV,
 	__REQ_SWAP,		/* swapping request. */
+	// critical
+	__REQ_CRITICAL,
+
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -352,6 +358,8 @@ enum req_flag_bits {
 
 #define REQ_DRV			(1ULL << __REQ_DRV)
 #define REQ_SWAP		(1ULL << __REQ_SWAP)
+
+#define REQ_CRITICAL    (1ULL << __REQ_CRITICAL)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
@@ -379,6 +387,12 @@ static inline void bio_set_op_attrs(struct bio *bio, unsigned op,
 	bio->bi_opf = op | op_flags;
 }
 
+static inline bool op_is_read(unsigned int op)
+{
+        return (op & REQ_OP_MASK) == REQ_OP_READ;
+}
+
+
 static inline bool op_is_write(unsigned int op)
 {
 	return (op & 1);
@@ -402,6 +416,11 @@ static inline bool op_is_sync(unsigned int op)
 {
 	return (op & REQ_OP_MASK) == REQ_OP_READ ||
 		(op & (REQ_SYNC | REQ_FUA | REQ_PREFLUSH));
+}
+
+static inline bool op_is_critical(unsigned int op)
+{
+	return op & REQ_CRITICAL;
 }
 
 static inline bool op_is_discard(unsigned int op)

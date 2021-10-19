@@ -512,6 +512,10 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 	bio->bi_pool = bs;
 	bio->bi_max_vecs = nr_iovecs;
 	bio->bi_io_vec = bvl;
+
+	//add by mzliu
+	bio->task_id = current->pid;
+	bio->task_group_id = current->tgid;
 	return bio;
 
 err_free:
