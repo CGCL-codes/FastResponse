@@ -1301,6 +1301,12 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 	if (p->sched_class == rq->curr->sched_class) {
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
 	} else {
+		if(p->critical){
+			if(p->sched_class->set_next_task){
+			//	printk(KERN_DEBUG "set_next_task:%d", p->pid);
+				p->sched_class->set_next_task(p);
+			}
+		}
 		for_each_class(class) {
 			if (class == rq->curr->sched_class)
 				break;
@@ -1310,7 +1316,6 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 			}
 		}
 	}
-
 	/*
 	 * A queue event has occurred, and we're going to schedule.  In
 	 * this case, we can save a useless back to back clock update.
@@ -2570,6 +2575,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.prev_sum_exec_runtime	= 0;
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
+	p->se.critical			= 0;
 	INIT_LIST_HEAD(&p->se.group_node);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -3895,7 +3901,17 @@ static void __sched notrace __schedule(bool preempt)
 	next = pick_next_task(rq, prev, &rf);
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
-
+	/*
+	if(next->critical==1){
+	printk(KERN_DEBUG "now sched222:%u %u %u %d", next->pid, current->pid, current->tgid, task_cpu(current));
+	if(current->sched_class==&rt_sched_class)
+		printk(KERN_DEBUG "prev is rt!");
+	else if(current->sched_class==&fair_sched_class)
+		printk(KERN_DEBUG "prev is fair!");
+	else
+		printk(KERN_DEBUG "prev is idle!");
+	}
+	*/
 	if (likely(prev != next)) {
 		rq->nr_switches++;
 		rq->curr = next;

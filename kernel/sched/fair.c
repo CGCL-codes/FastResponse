@@ -4237,8 +4237,19 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 	/*
 	 * Someone really wants this to run. If it's not unfair, run it.
 	 */
-	if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1)
-		se = cfs_rq->next;
+
+	if (cfs_rq->next){
+		if(cfs_rq->next->critical == 1){
+			se = cfs_rq->next;
+			se->critical = 0;
+		}
+		else if(wakeup_preempt_entity(cfs_rq->next, left) < 1){
+			se = cfs_rq->next;
+		}
+	}
+
+//	if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1)
+//		se = cfs_rq->next;
 
 	clear_buddies(cfs_rq, se);
 
@@ -5348,6 +5359,11 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 }
 
 static void set_next_buddy(struct sched_entity *se);
+
+void set_next_task_fair(struct task_struct *p)
+{
+        set_next_buddy(&p->se);
+}
 
 /*
  * The dequeue_task method is called before nr_running is
@@ -6686,12 +6702,31 @@ static void set_last_buddy(struct sched_entity *se)
 
 static void set_next_buddy(struct sched_entity *se)
 {
+	struct task_struct *p;
+	int flag = 0;
+	
 	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))))
 		return;
+
+	if (entity_is_task(se)){
+		p = task_of(se);
+		if(p && p->critical == 1){
+			flag = 1;
+			se->critical = 1;
+			//task_rq(p)->critical=1;
+			//printk(KERN_DEBUG "we will set next buddy:%u %u %d", current->pid, p->pid, p->critical);
+		}
+	}
 
 	for_each_sched_entity(se) {
 		if (SCHED_WARN_ON(!se->on_rq))
 			return;
+		if(cfs_rq_of(se)->next && cfs_rq_of(se)->next->critical == 1){
+//			printk(KERN_DEBUG "you cannot overwrite:%u %u", current->pid, current->critical);
+			break;
+		}
+		if(flag)
+			se->critical = 1;
 		cfs_rq_of(se)->next = se;
 	}
 }
@@ -6740,13 +6775,23 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 * prevents us from potentially nominating it as a false LAST_BUDDY
 	 * below.
 	 */
-	if (test_tsk_need_resched(curr))
+	if (test_tsk_need_resched(curr)){
+		if(p->critical)
+			set_next_buddy(pse);
 		return;
+	}
 
 	/* Idle tasks are by definition preempted by non-idle tasks. */
 	if (unlikely(task_has_idle_policy(curr)) &&
 	    likely(!task_has_idle_policy(p)))
 		goto preempt;
+
+	if(p->critical == 1){
+		//printk(KERN_DEBUG "I will preempt:%d", p->pid);
+		set_next_buddy(pse);
+		goto preempt;
+	}
+
 
 	/*
 	 * Batch and idle tasks do not preempt non-idle tasks (their preemption
@@ -6758,7 +6803,19 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
 	BUG_ON(!pse);
-	if (wakeup_preempt_entity(se, pse) == 1) {
+
+	if (p->critical == 1){
+		if (wakeup_preempt_entity(se, pse) >= 0){
+			/*
+					* Bias pick_next to pick the sched entity that is
+					* triggering this preemption.
+					*/
+					if (!next_buddy_marked)
+							set_next_buddy(pse);
+					goto preempt;
+		}
+	}
+	else if (wakeup_preempt_entity(se, pse) == 1) {
 		/*
 		 * Bias pick_next to pick the sched entity that is
 		 * triggering this preemption.
@@ -10367,6 +10424,7 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	}
 
 	se->my_q = cfs_rq;
+se->critical = 0;
 	/* guarantee group entities always have weight */
 	update_load_set(&se->load, NICE_0_LOAD);
 	se->parent = parent;
@@ -10446,6 +10504,7 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
  */
 const struct sched_class fair_sched_class = {
 	.next			= &idle_sched_class,
+	.set_next_task		= &set_next_task_fair,
 	.enqueue_task		= enqueue_task_fair,
 	.dequeue_task		= dequeue_task_fair,
 	.yield_task		= yield_task_fair,
