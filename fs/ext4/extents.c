@@ -160,7 +160,7 @@ int __ext4_ext_dirty(const char *where, unsigned int line, handle_t *handle,
 		ext4_extent_block_csum_set(inode, ext_block_hdr(path->p_bh));
 		/* path points to block */
 		if (ext4_handle_valid(handle)){
-			if (journal != NULL && journal->j_fs_dev != NULL && journal->j_fs_dev->bd_dev == 271581185){
+			if (journal != NULL && journal->j_fs_dev != NULL){
 		        if(ext4_check_dirty(path->p_bh)==0){
 					ext4_add_jext(handle, inode, path->p_bh);
 				}
@@ -1345,7 +1345,7 @@ static int ext4_ext_grow_indepth(handle_t *handle, struct inode *inode,
 //	}
 
 	if (ext4_handle_valid(handle)){
-		if (journal != NULL && journal->j_fs_dev != NULL && journal->j_fs_dev->bd_dev == 271581185){
+		if (journal != NULL && journal->j_fs_dev != NULL){
 	        if(ext4_check_dirty(bh)==0){
 				ext4_add_jext(handle, inode, bh);
 			}

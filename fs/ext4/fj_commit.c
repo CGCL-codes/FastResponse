@@ -80,7 +80,7 @@ void ext4_fj_del(struct inode *inode)
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 
-	if (!journal || journal->j_fs_dev->bd_dev != 271581185)
+	if (!journal)
 		return ;
 
 restart:
@@ -121,7 +121,7 @@ void ext4_fj_track_inode(struct inode *inode)
 	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 
-	if (!journal || journal->j_fs_dev->bd_dev != 271581185 || current->critical != 1)
+	if (!journal || current->critical != 1)
 		return ;
 
 	if (S_ISDIR(inode->i_mode))
@@ -151,7 +151,7 @@ void ext4_fj_track_range(struct inode *inode, ext4_lblk_t start, ext4_lblk_t end
 {
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 	
-	if (!journal || journal->j_fs_dev->bd_dev != 271581185 || current->critical != 1)
+	if (!journal || current->critical != 1)
 		return ;
 
 	if (S_ISDIR(inode->i_mode))
@@ -769,7 +769,7 @@ int ext4_fj_commit(journal_t *journal, tid_t commit_tid)
 	struct ext4_inode_info *iter;
 	struct inode *inode;
 
-	if (journal->j_fs_dev->bd_dev != 271581185 || current->critical != 1)
+	if (current->critical != 1)
 		return 0;
 
 	spin_lock(&sbi->s_fj_lock);
@@ -827,8 +827,6 @@ out:
 
 void ext4_fj_init(struct super_block *sb, journal_t *journal)
 {
-	if (journal->j_fs_dev->bd_dev != 271581185)
-		return ;
 	journal->j_fj_cleanup_callback = ext4_fj_cleanup;
 	if (jbd2_fj_init(journal, EXT4_NUM_FJ_BLKS)) {
 		pr_warn("Error while enabling fj commits, turning off.");

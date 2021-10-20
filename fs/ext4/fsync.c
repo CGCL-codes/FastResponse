@@ -152,7 +152,7 @@ int ext4_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
 		needs_barrier = true;
 
-	if (journal->j_fs_dev->bd_dev != 271581185  || current->critical != 1)
+	if (current->critical != 1)
 		ret = jbd2_complete_transaction(journal, commit_tid);
 	else
 		ret = ext4_fj_commit(journal, commit_tid);

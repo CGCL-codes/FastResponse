@@ -3448,8 +3448,7 @@ static bool ext4_inode_datasync_dirty(struct inode *inode)
 		if (jbd2_transaction_committed(journal,
 					EXT4_I(inode)->i_datasync_tid))
 			return false;
-		if (journal->j_fs_dev->bd_dev == 271581185)
-			return !list_empty(&EXT4_I(inode)->i_fj_list);
+		return !list_empty(&EXT4_I(inode)->i_fj_list);
 		return true;
 	
 //		return !jbd2_transaction_committed(journal,

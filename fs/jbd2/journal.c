@@ -1496,8 +1496,7 @@ static int journal_reset(journal_t *journal)
 
 	// Here we directly find the db_dev of the device.
 	// TODO: optimize
-	if (journal->j_fs_dev->bd_dev == 271581185 &&
-	    journal->j_fj_wbufsize > 0) {
+	if (journal->j_fj_wbufsize > 0) {
 		journal->j_fj_last = last;
 		journal->j_last = last - journal->j_fj_wbufsize;
 		journal->j_fj_first = journal->j_last + 1;
@@ -1837,8 +1836,7 @@ static int load_superblock(journal_t *journal)
 	journal->j_last = be32_to_cpu(sb->s_maxlen);
 	journal->j_errno = be32_to_cpu(sb->s_errno);
 
-	if (journal->j_fs_dev->bd_dev == 271581185 &&
-	    journal->j_fj_wbufsize > 0) {
+	if (journal->j_fj_wbufsize > 0) {
 		journal->j_fj_last = be32_to_cpu(sb->s_maxlen);
 		journal->j_last = journal->j_fj_last - journal->j_fj_wbufsize;
 		journal->j_fj_first = journal->j_last + 1;
