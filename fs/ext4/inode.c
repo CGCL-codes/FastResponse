@@ -744,6 +744,7 @@ out_sem:
 			if (ret)
 				return ret;
 		}
+		ext4_fj_track_inode(inode);
 	}
 	return retval;
 }
@@ -3443,9 +3444,17 @@ static bool ext4_inode_datasync_dirty(struct inode *inode)
 {
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 
-	if (journal)
-		return !jbd2_transaction_committed(journal,
-					EXT4_I(inode)->i_datasync_tid);
+	if (journal){
+		if (jbd2_transaction_committed(journal,
+					EXT4_I(inode)->i_datasync_tid))
+			return false;
+		if (journal->j_fs_dev->bd_dev == 271581185)
+			return !list_empty(&EXT4_I(inode)->i_fj_list);
+		return true;
+	
+//		return !jbd2_transaction_committed(journal,
+//					EXT4_I(inode)->i_datasync_tid);
+	}
 	/* Any metadata buffers to write? */
 	if (!list_empty(&inode->i_mapping->private_list))
 		return true;
@@ -5002,6 +5011,7 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 	for (block = 0; block < EXT4_N_BLOCKS; block++)
 		ei->i_data[block] = raw_inode->i_block[block];
 	INIT_LIST_HEAD(&ei->i_orphan);
+	ext4_fj_init_inode(&ei->vfs_inode);
 
 	/*
 	 * Set transaction id's of transactions that have to be committed
@@ -5259,6 +5269,7 @@ static int ext4_do_update_inode(handle_t *handle,
 	uid_t i_uid;
 	gid_t i_gid;
 	projid_t i_projid;
+	__le16 pre_links_count;
 
 	spin_lock(&ei->i_raw_lock);
 
@@ -5293,7 +5304,15 @@ static int ext4_do_update_inode(handle_t *handle,
 		raw_inode->i_uid_high = 0;
 		raw_inode->i_gid_high = 0;
 	}
+	pre_links_count = raw_inode->i_links_count;
 	raw_inode->i_links_count = cpu_to_le16(inode->i_nlink);
+	//printk(KERN_DEBUG "links,pre_count: %u now_count:%u", pre_links_count, raw_inode->i_links_count);
+
+	if (raw_inode->i_links_count > 1 && raw_inode->i_links_count > pre_links_count){
+		// iJ: now we have uncommitted hard links! note that we only record the case that multiple files share the inodes
+		inode->i_flags |= S_UNCOMMITTED_HL;
+		// printk(KERN_DEBUG "ext4_do_update_inode:inode:%lu before:%u, after:%u.S_UNCOMMITTED_HL", inode->i_ino, pre_links_count, raw_inode->i_links_count);
+	}
 
 	EXT4_INODE_SET_XTIME(i_ctime, inode, raw_inode);
 	EXT4_INODE_SET_XTIME(i_mtime, inode, raw_inode);
@@ -5896,6 +5915,8 @@ int ext4_mark_iloc_dirty(handle_t *handle,
 		put_bh(iloc->bh);
 		return -EIO;
 	}
+	ext4_fj_track_inode(inode);
+
 	if (IS_I_VERSION(inode))
 		inode_inc_iversion(inode);
 

@@ -153,11 +153,19 @@ int __ext4_ext_dirty(const char *where, unsigned int line, handle_t *handle,
 		     struct inode *inode, struct ext4_ext_path *path)
 {
 	int err;
+	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 
 	WARN_ON(!rwsem_is_locked(&EXT4_I(inode)->i_data_sem));
 	if (path->p_bh) {
 		ext4_extent_block_csum_set(inode, ext_block_hdr(path->p_bh));
 		/* path points to block */
+		if (ext4_handle_valid(handle)){
+			if (journal != NULL && journal->j_fs_dev != NULL && journal->j_fs_dev->bd_dev == 271581185){
+		        if(ext4_check_dirty(path->p_bh)==0){
+					ext4_add_jext(handle, inode, path->p_bh);
+				}
+			}
+		}
 		err = __ext4_handle_dirty_metadata(where, line, handle,
 						   inode, path->p_bh);
 	} else {
@@ -1285,6 +1293,7 @@ static int ext4_ext_grow_indepth(handle_t *handle, struct inode *inode,
 	struct ext4_super_block *es = EXT4_SB(inode->i_sb)->s_es;
 	int err = 0;
 	size_t ext_size = 0;
+	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 
 	/* Try to prepend new index to old one */
 	if (ext_depth(inode))
@@ -1328,6 +1337,20 @@ static int ext4_ext_grow_indepth(handle_t *handle, struct inode *inode,
 	ext4_extent_block_csum_set(inode, neh);
 	set_buffer_uptodate(bh);
 	unlock_buffer(bh);
+
+	// FJ
+//	if(ext4_check_dirty(bh)==0){
+//		printk(KERN_DEBUG "ext4_ext_grow_indepth->ext4_add_jext inode:%d %lu \n", current->pid, inode->i_ino);
+//		ext4_add_jext(handle, inode, bh);
+//	}
+
+	if (ext4_handle_valid(handle)){
+		if (journal != NULL && journal->j_fs_dev != NULL && journal->j_fs_dev->bd_dev == 271581185){
+	        if(ext4_check_dirty(bh)==0){
+				ext4_add_jext(handle, inode, bh);
+			}
+		}
+    }
 
 	err = ext4_handle_dirty_metadata(handle, inode, bh);
 	if (err)

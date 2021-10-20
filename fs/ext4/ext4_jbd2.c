@@ -330,3 +330,19 @@ int __ext4_handle_dirty_super(const char *where, unsigned int line,
 		mark_buffer_dirty(bh);
 	return err;
 }
+
+
+int __ext4_add_jext(const char *where, unsigned int line, handle_t *handle, struct inode *inode, struct buffer_head *bh) //FJ
+{
+	struct jbd2_inode* jinode = EXT4_I(inode)->jinode;
+	int ret = 0;
+	if(jinode)
+		ret = jbd2_add_jext(jinode, handle, bh);
+	return ret;
+}
+
+int __ext4_check_dirty(const char *where, unsigned int line, //FJ
+			      struct buffer_head *bh)
+{
+	return jbd2_check_dirty(bh);	
+}

@@ -717,6 +717,85 @@ int jbd2_log_wait_commit(journal_t *journal, tid_t tid)
 	return err;
 }
 
+/*
+ * Start a fj commit. If there's an ongoing fj or full commit wait for
+ * it to complete. Returns 0 if a new fj commit was started. Returns -EALREADY
+ * if a fj commit is not needed, either because there's an already a commit
+ * going on or this tid has already been committed. Returns -EINVAL if no jbd2
+ * commit has yet been performed.
+ */
+int jbd2_fj_begin_commit(journal_t *journal, tid_t tid)
+{
+	if (unlikely(is_journal_aborted(journal)))
+		return -EIO;
+	/*
+	 * fj commits only allowed if at least one full commit has
+	 * been processed.
+	 */
+	if (!journal->j_stats.ts_tid || !journal->j_checkpoint_transactions)
+		return -EINVAL;
+	
+	write_lock(&journal->j_state_lock);
+	if (tid <= journal->j_commit_sequence){
+		write_unlock(&journal->j_state_lock);
+		return -EALREADY;
+	}
+
+	if (journal->j_flags & JBD2_FULL_COMMIT_ONGOING ||
+	    (journal->j_flags & JBD2_FJ_COMMIT_ONGOING)) {
+		DEFINE_WAIT(wait);
+
+		prepare_to_wait(&journal->j_fj_wait, &wait,
+				TASK_UNINTERRUPTIBLE);
+		write_unlock(&journal->j_state_lock);
+		schedule();
+		finish_wait(&journal->j_fj_wait, &wait);
+		return -EALREADY;
+	}
+	journal->j_flags |= JBD2_FJ_COMMIT_ONGOING;
+	write_unlock(&journal->j_state_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(jbd2_fj_begin_commit);
+
+/*
+ * Stop a fj commit. If fallback is set, this function starts commit of
+ * TID tid before any other fj commit can start.
+ */
+static int __jbd2_fj_end_commit(journal_t *journal, tid_t tid, bool fallback)
+{
+	if (journal->j_fj_cleanup_callback)
+		journal->j_fj_cleanup_callback(journal, 0);
+	write_lock(&journal->j_state_lock);
+	journal->j_flags &= ~JBD2_FJ_COMMIT_ONGOING;
+	if (fallback)
+		journal->j_flags |= JBD2_FULL_COMMIT_ONGOING;
+	write_unlock(&journal->j_state_lock);
+	wake_up(&journal->j_fj_wait);
+	if (fallback)
+		return jbd2_complete_transaction(journal, tid);
+	return 0;
+}
+
+int jbd2_fj_end_commit(journal_t *journal)
+{
+	return __jbd2_fj_end_commit(journal, 0, false);
+}
+EXPORT_SYMBOL(jbd2_fj_end_commit);
+
+int jbd2_fj_end_commit_fallback(journal_t *journal)
+{
+	tid_t tid;
+
+	read_lock(&journal->j_state_lock);
+	tid = journal->j_running_transaction ?
+		journal->j_running_transaction->t_tid : 0;
+	read_unlock(&journal->j_state_lock);
+	return __jbd2_fj_end_commit(journal, tid, true);
+}
+EXPORT_SYMBOL(jbd2_fj_end_commit_fallback);
+
 /* Return 1 when transaction with given tid has already committed. */
 int jbd2_transaction_committed(journal_t *journal, tid_t tid)
 {
@@ -784,6 +863,101 @@ int jbd2_journal_next_log_block(journal_t *journal, unsigned long long *retp)
 	write_unlock(&journal->j_state_lock);
 	return jbd2_journal_bmap(journal, blocknr, retp);
 }
+
+/* Map one fj commit buffer for use by the file system */
+int jbd2_fj_get_buf(journal_t *journal, struct buffer_head **bh_out, unsigned long long *retp)
+{
+	unsigned long blocknr;
+	int ret = 0;
+	struct buffer_head *bh;
+	int fj_off;
+
+	*bh_out = NULL;
+
+	if (journal->j_fj_off + journal->j_fj_first < journal->j_fj_last) {
+		fj_off = journal->j_fj_off;
+		blocknr = journal->j_fj_first + fj_off;
+		journal->j_fj_off++;
+//		printk(KERN_DEBUG "journal area now: %lu %lu %lu", journal->j_fj_first, journal->j_fj_last, journal->j_fj_off);
+	} else {
+		printk(KERN_DEBUG "journal area over: %lu %lu %lu", journal->j_fj_first, journal->j_fj_last, journal->j_fj_off);
+		ret = -EINVAL;
+	}
+
+	if (ret)
+		return ret;
+
+	ret = jbd2_journal_bmap(journal, blocknr, retp);
+	if (ret)
+		return ret;
+
+	bh = __getblk(journal->j_dev, *retp, journal->j_blocksize);
+	if (!bh)
+		return -ENOMEM;
+
+	journal->j_fj_wbuf[fj_off] = bh;
+
+	*bh_out = bh;
+
+	return 0;
+}
+EXPORT_SYMBOL(jbd2_fj_get_buf);
+
+/*
+ * Wait on fj commit buffers that were allocated by jbd2_fj_get_buf
+ * for completion.
+ */
+int jbd2_fj_wait_bufs(journal_t *journal, int num_blks)
+{
+	struct buffer_head *bh;
+	int i, j_fj_off;
+
+	j_fj_off = journal->j_fj_off;
+	/*
+	 * Wait in reverse order to minimize chances of us being woken up before
+	 * all IOs have completed
+	 */
+	for (i = j_fj_off - 1; i >= j_fj_off - num_blks; i--) {
+		bh = journal->j_fj_wbuf[i];
+		wait_on_buffer(bh);
+		put_bh(bh);
+		journal->j_fj_wbuf[i] = NULL;
+		if (unlikely(!buffer_uptodate(bh)))
+			return -EIO;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(jbd2_fj_wait_bufs);
+
+/*
+ * Wait on fj commit buffers that were allocated by jbd2_fj_get_buf
+ * for completion.
+ */
+int jbd2_fj_release_bufs(journal_t *journal)
+{
+	struct buffer_head *bh;
+	int i, j_fj_off;
+
+	read_lock(&journal->j_state_lock);
+	j_fj_off = journal->j_fj_off;
+	read_unlock(&journal->j_state_lock);
+
+	/*
+	 * Wait in reverse order to minimize chances of us being woken up before
+	 * all IOs have completed
+	 */
+	for (i = j_fj_off - 1; i >= 0; i--) {
+		bh = journal->j_fj_wbuf[i];
+		if (!bh)
+			break;
+		put_bh(bh);
+		journal->j_fj_wbuf[i] = NULL;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(jbd2_fj_release_bufs);
 
 /*
  * Conversion of logical to physical block numbers for the journal
@@ -1128,6 +1302,8 @@ static journal_t *journal_init_common(struct block_device *bdev,
 	init_waitqueue_head(&journal->j_wait_commit);
 	init_waitqueue_head(&journal->j_wait_updates);
 	init_waitqueue_head(&journal->j_wait_reserved);
+//	init_waitqueue_head(&journal->j_wait_fsync); //iJ
+	init_waitqueue_head(&journal->j_fj_wait);
 	mutex_init(&journal->j_barrier);
 	mutex_init(&journal->j_checkpoint_mutex);
 	spin_lock_init(&journal->j_revoke_lock);
@@ -1164,6 +1340,14 @@ static journal_t *journal_init_common(struct block_device *bdev,
 					GFP_KERNEL);
 	if (!journal->j_wbuf)
 		goto err_cleanup;
+	
+	if (journal->j_fj_wbufsize > 0) {
+		journal->j_fj_wbuf = kmalloc_array(journal->j_fj_wbufsize,
+					sizeof(struct buffer_head *),
+					GFP_KERNEL);
+		if (!journal->j_fj_wbuf)
+			goto err_cleanup;
+	}
 
 	bh = getblk_unmovable(journal->j_dev, start, journal->j_blocksize);
 	if (!bh) {
@@ -1178,10 +1362,22 @@ static journal_t *journal_init_common(struct block_device *bdev,
 
 err_cleanup:
 	kfree(journal->j_wbuf);
+	kfree(journal->j_fj_wbuf);
 	jbd2_journal_destroy_revoke(journal);
 	kfree(journal);
 	return NULL;
 }
+
+int jbd2_fj_init(journal_t *journal, int num_fj_blks)
+{
+	journal->j_fj_wbufsize = num_fj_blks;
+	journal->j_fj_wbuf = kmalloc_array(journal->j_fj_wbufsize,
+				sizeof(struct buffer_head *), GFP_KERNEL);
+	if (!journal->j_fj_wbuf)
+		return -ENOMEM;
+	return 0;
+}
+EXPORT_SYMBOL(jbd2_fj_init);
 
 /* jbd2_journal_init_dev and jbd2_journal_init_inode:
  *
@@ -1297,7 +1493,19 @@ static int journal_reset(journal_t *journal)
 	}
 
 	journal->j_first = first;
-	journal->j_last = last;
+
+	// Here we directly find the db_dev of the device.
+	// TODO: optimize
+	if (journal->j_fs_dev->bd_dev == 271581185 &&
+	    journal->j_fj_wbufsize > 0) {
+		journal->j_fj_last = last;
+		journal->j_last = last - journal->j_fj_wbufsize;
+		journal->j_fj_first = journal->j_last + 1;
+		journal->j_fj_off = 0;
+	} else {
+		journal->j_last = last;
+	}
+//	journal->j_last = last;
 
 	journal->j_head = first;
 	journal->j_tail = first;
@@ -1629,6 +1837,16 @@ static int load_superblock(journal_t *journal)
 	journal->j_last = be32_to_cpu(sb->s_maxlen);
 	journal->j_errno = be32_to_cpu(sb->s_errno);
 
+	if (journal->j_fs_dev->bd_dev == 271581185 &&
+	    journal->j_fj_wbufsize > 0) {
+		journal->j_fj_last = be32_to_cpu(sb->s_maxlen);
+		journal->j_last = journal->j_fj_last - journal->j_fj_wbufsize;
+		journal->j_fj_first = journal->j_last + 1;
+		journal->j_fj_off = 0;
+	} else {
+		journal->j_last = be32_to_cpu(sb->s_maxlen);
+	}
+
 	return 0;
 }
 
@@ -1768,6 +1986,8 @@ int jbd2_journal_destroy(journal_t *journal)
 		jbd2_journal_destroy_revoke(journal);
 	if (journal->j_chksum_driver)
 		crypto_free_shash(journal->j_chksum_driver);
+	if (journal->j_fj_wbufsize > 0)
+		kfree(journal->j_fj_wbuf);
 	kfree(journal->j_wbuf);
 	kfree(journal);
 
@@ -2576,6 +2796,9 @@ void jbd2_journal_init_jbd_inode(struct jbd2_inode *jinode, struct inode *inode)
 	jinode->i_dirty_start = 0;
 	jinode->i_dirty_end = 0;
 	INIT_LIST_HEAD(&jinode->i_list);
+	INIT_LIST_HEAD(&jinode->jext_list);
+	spin_lock_init(&jinode->jext_list_lock);
+	jinode->jext_len = 0;
 }
 
 /*
@@ -2586,8 +2809,23 @@ void jbd2_journal_init_jbd_inode(struct jbd2_inode *jinode, struct inode *inode)
 void jbd2_journal_release_jbd_inode(journal_t *journal,
 				    struct jbd2_inode *jinode)
 {
+	struct jbd2_ext  *jext, *next_j; //iJ
+
 	if (!journal)
 		return;
+
+	//iJ	
+	spin_lock(&jinode->jext_list_lock);
+	list_for_each_entry_safe(jext, next_j,
+			 &jinode->jext_list, e_list) {
+			printk("jbd2_journal_release_jbd_inode:ESLAB %llu...del\n", jext->e_bh->b_blocknr);
+			list_del_init(&jext->e_list);
+			kfree(jext);
+	}
+	spin_unlock(&jinode->jext_list_lock);
+	
+	jinode->jext_len = 0; //iJ	
+
 restart:
 	spin_lock(&journal->j_list_lock);
 	/* Is commit writing out inode - we have to wait */

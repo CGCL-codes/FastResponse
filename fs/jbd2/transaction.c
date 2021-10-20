@@ -1336,6 +1336,42 @@ void jbd2_buffer_abort_trigger(struct journal_head *jh,
 	triggers->t_abort(triggers, jh2bh(jh));
 }
 
+int jbd2_add_jext(struct jbd2_inode *jinode, handle_t *handle, struct buffer_head *bh) //iJ
+{
+	struct jbd2_ext *jext, *pivot_jext, *next_j;
+	tid_t tid = handle->h_transaction->t_tid;
+	journal_t *journal = handle->h_transaction->t_journal;
+	
+	jext = (struct jbd2_ext *)kmalloc(sizeof(struct jbd2_ext), GFP_KERNEL);
+	//iJ	
+	spin_lock(&jinode->jext_list_lock);
+	list_for_each_entry_safe(pivot_jext, next_j,
+			 &jinode->jext_list, e_list) {
+			if(tid_geq(journal->j_commit_sequence, pivot_jext->e_trans) || pivot_jext->e_bh == bh){
+//		 		printk(KERN_DEBUG "jbd2_add_jext:%d inode:%lu del ESLAB %llu...del %u\n", current->pid, jinode->i_vfs_inode->i_ino, pivot_jext->e_bh->b_blocknr,pivot_jext->e_trans);
+			 	list_del_init(&pivot_jext->e_list);
+				kfree(pivot_jext);
+				jinode->jext_len--;
+			 }
+	}
+	
+	jext->e_bh = bh;
+	jext->e_trans = tid;
+	INIT_LIST_HEAD(&jext->e_list);
+	list_add(&jext->e_list, &jinode->jext_list);
+	spin_unlock(&jinode->jext_list_lock);
+	
+	jinode->jext_len++;
+//	printk(KERN_DEBUG "jbd2_add_jext:%d inode:%lu jext_len:%u add ESLAB %llu buffer added %u  \n", current->pid,jinode->i_vfs_inode->i_ino, jinode->jext_len, bh->b_blocknr, jext->e_trans);
+
+	return 0;
+}
+
+int jbd2_check_dirty(struct buffer_head *bh) //DJ
+{
+	return (bh2jh(bh)->b_modified);
+}
+
 /**
  * int jbd2_journal_dirty_metadata() -  mark a buffer as containing dirty metadata
  * @handle: transaction to add buffer to.
@@ -1496,6 +1532,9 @@ int jbd2_journal_dirty_metadata(handle_t *handle, struct buffer_head *bh)
 	JBUFFER_TRACE(jh, "file as BJ_Metadata");
 	spin_lock(&journal->j_list_lock);
 	__jbd2_journal_file_buffer(jh, transaction, BJ_Metadata);
+//	if (current->critical == 1){
+//		printk(KERN_DEBUG "jbd2_journal_dirty_metadata: %d", current->pid);
+//	}
 	spin_unlock(&journal->j_list_lock);
 out_unlock_bh:
 	jbd_unlock_bh_state(bh);
@@ -2459,6 +2498,9 @@ void __jbd2_journal_file_buffer(struct journal_head *jh,
 	case BJ_Metadata:
 		transaction->t_nr_buffers++;
 		list = &transaction->t_buffers;
+//		if (current->critical == 1){
+//                	printk(KERN_DEBUG "__jbd2_journal_file_buffer: %d", current->pid);
+//        	}
 		break;
 	case BJ_Forget:
 		list = &transaction->t_forget;

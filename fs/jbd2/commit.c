@@ -202,6 +202,29 @@ static int journal_submit_inode_data_buffers(struct address_space *mapping,
 	return ret;
 }
 
+/* Send all the data buffers related to an inode */
+int jbd2_submit_inode_data(struct jbd2_inode *jinode)
+{
+
+	if (!jinode || !(jinode->i_flags & JI_WRITE_DATA))
+		return 0;
+
+	return journal_submit_inode_data_buffers(jinode->i_vfs_inode->i_mapping, jinode->i_dirty_start, jinode->i_dirty_end);
+
+}
+EXPORT_SYMBOL(jbd2_submit_inode_data);
+
+int jbd2_wait_inode_data(journal_t *journal, struct jbd2_inode *jinode)
+{
+	if (!jinode || !(jinode->i_flags & JI_WAIT_DATA) ||
+		!jinode->i_vfs_inode || !jinode->i_vfs_inode->i_mapping)
+		return 0;
+	return filemap_fdatawait_range_keep_errors(
+		jinode->i_vfs_inode->i_mapping, jinode->i_dirty_start,
+		jinode->i_dirty_end);
+}
+EXPORT_SYMBOL(jbd2_wait_inode_data);
+
 /*
  * Submit all the data buffers of inode associated with the transaction to
  * disk.
@@ -274,6 +297,14 @@ static int journal_finish_inode_data_buffers(journal_t *journal,
 				dirty_end);
 		if (!ret)
 			ret = err;
+		if(HAS_UNCOMMITTED_HL(jinode->i_vfs_inode)){
+			jinode->i_vfs_inode->i_flags &= ~S_UNCOMMITTED_HL;
+			printk(KERN_DEBUG "journal_finish_inode_data_buffers: inode: %lu clear S_UNCOMMITTED_HL", jinode->i_vfs_inode->i_ino);
+			if (HAS_UNCOMMITTED_HL(jinode->i_vfs_inode)){
+				printk(KERN_ERR "cannot clear the S_UNCOMMITTED_HL");
+			}
+		}
+		jinode->i_vfs_inode->i_flags &= ~S_UNCOMMITTED_HL;
 		spin_lock(&journal->j_list_lock);
 		jinode->i_flags &= ~JI_COMMIT_RUNNING;
 		smp_mb();
@@ -1091,7 +1122,7 @@ restart_loop:
 	commit_transaction->t_state = T_COMMIT_CALLBACK;
 	J_ASSERT(commit_transaction == journal->j_committing_transaction);
 	journal->j_commit_sequence = commit_transaction->t_tid;
-	journal->j_committing_transaction = NULL;
+//	journal->j_committing_transaction = NULL;
 	commit_time = ktime_to_ns(ktime_sub(ktime_get(), start_time));
 
 	/*
@@ -1109,11 +1140,33 @@ restart_loop:
 	if (journal->j_commit_callback)
 		journal->j_commit_callback(journal, commit_transaction);
 
+	write_lock(&journal->j_state_lock);
+	journal->j_flags |= JBD2_FULL_COMMIT_ONGOING;
+	while (journal->j_flags & JBD2_FJ_COMMIT_ONGOING) {
+		DEFINE_WAIT(wait);
+
+		prepare_to_wait(&journal->j_fj_wait, &wait,
+				TASK_UNINTERRUPTIBLE);
+		write_unlock(&journal->j_state_lock);
+		schedule();
+		write_lock(&journal->j_state_lock);
+		finish_wait(&journal->j_fj_wait, &wait);
+    }
+	journal->j_fj_off = 0;
+	journal->j_commit_sequence = commit_transaction->t_tid;
+	journal->j_committing_transaction = NULL;
+	write_unlock(&journal->j_state_lock);
+
+	if (journal->j_fj_cleanup_callback)
+		journal->j_fj_cleanup_callback(journal, 1);
+
 	trace_jbd2_end_commit(journal, commit_transaction);
 	jbd_debug(1, "JBD2: commit %d complete, head %d\n",
 		  journal->j_commit_sequence, journal->j_tail_sequence);
 
 	write_lock(&journal->j_state_lock);
+	journal->j_flags &= ~JBD2_FULL_COMMIT_ONGOING;
+//	journal->j_flags &= ~JBD2_FJ_COMMIT_ONGOING;
 	spin_lock(&journal->j_list_lock);
 	commit_transaction->t_state = T_FINISHED;
 	/* Check if the transaction can be dropped now that we are finished */
@@ -1125,6 +1178,7 @@ restart_loop:
 	spin_unlock(&journal->j_list_lock);
 	write_unlock(&journal->j_state_lock);
 	wake_up(&journal->j_wait_done_commit);
+	wake_up(&journal->j_fj_wait);
 
 	/*
 	 * Calculate overall stats
@@ -1142,4 +1196,5 @@ restart_loop:
 	journal->j_stats.run.rs_blocks += stats.run.rs_blocks;
 	journal->j_stats.run.rs_blocks_logged += stats.run.rs_blocks_logged;
 	spin_unlock(&journal->j_history_lock);
+//	printk(KERN_DEBUG "IN COMMIT: %d %d %d %d", current->pid, current->critical, stats.run.rs_blocks_logged + 1, tag_bytes);
 }

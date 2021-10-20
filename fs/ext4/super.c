@@ -1100,6 +1100,7 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 	ei->i_datasync_tid = 0;
 	atomic_set(&ei->i_unwritten, 0);
 	INIT_WORK(&ei->i_rsv_conversion_work, ext4_end_io_rsv_work);
+	ext4_fj_init_inode(&ei->vfs_inode);
 	return &ei->vfs_inode;
 }
 
@@ -1139,6 +1140,7 @@ static void init_once(void *foo)
 	init_rwsem(&ei->i_data_sem);
 	init_rwsem(&ei->i_mmap_sem);
 	inode_init_once(&ei->vfs_inode);
+	ext4_fj_init_inode(&ei->vfs_inode);
 }
 
 static int __init init_inodecache(void)
@@ -1167,6 +1169,7 @@ static void destroy_inodecache(void)
 
 void ext4_clear_inode(struct inode *inode)
 {
+	ext4_fj_del(inode);
 	invalidate_inode_buffers(inode);
 	clear_inode(inode);
 	dquot_drop(inode);
@@ -4285,6 +4288,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	INIT_LIST_HEAD(&sbi->s_orphan); /* unlinked but open files */
 	mutex_init(&sbi->s_orphan_lock);
 
+	/* Initialize fast commit stuff */
+	atomic_set(&sbi->s_fj_subtid, 0);
+	INIT_LIST_HEAD(&sbi->s_fj_q[FJ_Q_MAIN]);
+	INIT_LIST_HEAD(&sbi->s_fj_q[FJ_Q_STAGING]);
+	sbi->s_mount_state &= ~EXT4_FJ_COMMITTING;
+	spin_lock_init(&sbi->s_fj_lock);
+
 	sb->s_root = NULL;
 
 	needs_recovery = (es->s_last_orphan != 0 ||
@@ -4687,6 +4697,7 @@ static void ext4_init_journal_params(struct super_block *sb, journal_t *journal)
 	journal->j_commit_interval = sbi->s_commit_interval;
 	journal->j_min_batch_time = sbi->s_min_batch_time;
 	journal->j_max_batch_time = sbi->s_max_batch_time;
+	ext4_fj_init(sb, journal);
 
 	write_lock(&journal->j_state_lock);
 	if (test_opt(sb, BARRIER))

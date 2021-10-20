@@ -151,7 +151,13 @@ int ext4_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	if (journal->j_flags & JBD2_BARRIER &&
 	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
 		needs_barrier = true;
-	ret = jbd2_complete_transaction(journal, commit_tid);
+
+	if (journal->j_fs_dev->bd_dev != 271581185  || current->critical != 1)
+		ret = jbd2_complete_transaction(journal, commit_tid);
+	else
+		ret = ext4_fj_commit(journal, commit_tid);
+
+
 	if (needs_barrier) {
 	issue_flush:
 		err = blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);

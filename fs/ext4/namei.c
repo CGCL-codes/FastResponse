@@ -2226,6 +2226,10 @@ static int ext4_add_entry(handle_t *handle, struct dentry *dentry,
 					   NULL, bh);
 		if (retval != -ENOSPC)
 			goto out;
+		
+		// FJ
+		//printk(KERN_DEBUG "ext4_add_entry->ext4_set_inode_state\n");
+		ext4_set_inode_state(dir, EXT4_STATE_NEWENTRY);
 
 		if (blocks == 1 && !dx_fallback &&
 		    ext4_has_feature_dir_index(sb)) {

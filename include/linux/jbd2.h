@@ -123,6 +123,7 @@ typedef struct journal_s	journal_t;	/* Journal control structure */
 #define JBD2_SUPERBLOCK_V1	3
 #define JBD2_SUPERBLOCK_V2	4
 #define JBD2_REVOKE_BLOCK	5
+#define JBD2_FSYNC_BLOCK	6
 
 /*
  * Standard header for all descriptor blocks:
@@ -467,6 +468,25 @@ struct jbd2_inode {
 	 * ends. [j_list_lock]
 	 */
 	loff_t i_dirty_end;
+
+	struct list_head jext_list; //iJ
+
+	unsigned int jext_len; //iJ
+
+	spinlock_t jext_list_lock;
+};
+
+//iJ Jext
+struct jbd2_ext {
+
+	struct buffer_head * e_bh;
+
+	/* Which transaction does this inode belong to? Either the running
+	 * transaction or the committing one. [j_list_lock] */
+	tid_t e_trans;
+
+	/* List of inodes in the i_transaction [j_list_lock] */
+	struct list_head e_list;
 };
 
 struct jbd2_revoke_table_s;
@@ -860,6 +880,16 @@ struct journal_s
 	wait_queue_head_t	j_wait_reserved;
 
 	/**
+	 * @j_fj_wait:
+	 *
+	 * Wait queue to wait for completion of async fj commits.
+	 */
+	wait_queue_head_t	j_fj_wait;
+	
+	/* Wait queue to wait for fsync to complete */
+	//	wait_queue_head_t	j_wait_fsync; // iJ
+
+	/**
 	 * @j_checkpoint_mutex:
 	 *
 	 * Semaphore for locking against concurrent checkpoints.
@@ -915,6 +945,30 @@ struct journal_s
 	 * [j_state_lock].
 	 */
 	unsigned long		j_last;
+
+	/**
+	 * @j_fj_first:
+	 *
+	 * The block number of the first fj commit block in the journal
+	 * [j_state_lock].
+	 */
+	unsigned long		j_fj_first;
+
+	/**
+	 * @j_fj_off:
+	 *
+	 * Number of fj commit blocks currently allocated.
+	 * [j_state_lock].
+	 */
+	unsigned long		j_fj_off;
+
+	/**
+	 * @j_fj_last:
+	 *
+	 * The block number one beyond the last fj commit block in the journal
+	 * [j_state_lock].
+	 */
+	unsigned long		j_fj_last;
 
 	/**
 	 * @j_dev: Device where we store the journal.
@@ -1060,11 +1114,24 @@ struct journal_s
 	struct buffer_head	**j_wbuf;
 
 	/**
+	 * @j_fj_wbuf: Array of fj commit bhs for
+	 * jbd2_journal_commit_transaction.
+	 */
+	struct buffer_head	**j_fj_wbuf;
+
+	/**
 	 * @j_wbufsize:
 	 *
 	 * Size of @j_wbuf array.
 	 */
 	int			j_wbufsize;
+
+	/**
+	 * @j_fj_wbufsize:
+	 *
+	 * Size of @j_fj_wbuf array.
+	 */
+	int			j_fj_wbufsize;
 
 	/**
 	 * @j_last_sync_writer:
@@ -1165,6 +1232,13 @@ struct journal_s
 	 */
 	struct lockdep_map	j_trans_commit_map;
 #endif
+	/**
+	 * @j_fj_cleanup_callback:
+	 *
+	 * Clean-up after fj commit or full commit. JBD2 calls this function
+	 * after every commit operation.
+	 */
+	void (*j_fj_cleanup_callback)(struct journal_s *journal, int);
 };
 
 #define jbd2_might_wait_for_commit(j) \
@@ -1249,6 +1323,9 @@ JBD2_FEATURE_INCOMPAT_FUNCS(csum3,		CSUM_V3)
 						 * data write error in ordered
 						 * mode */
 #define JBD2_REC_ERR	0x080	/* The errno in the sb has been recorded */
+//#define JBD2_FSYNC 0x100
+#define JBD2_FJ_COMMIT_ONGOING	0x100	/* Fj commit is ongoing */
+#define JBD2_FULL_COMMIT_ONGOING	0x200	/* Full commit is ongoing */
 
 /*
  * Function declarations for the journaling transaction and buffer
@@ -1372,6 +1449,8 @@ extern int	 jbd2_journal_get_undo_access(handle_t *, struct buffer_head *);
 void		 jbd2_journal_set_triggers(struct buffer_head *,
 					   struct jbd2_buffer_trigger_type *type);
 extern int	 jbd2_journal_dirty_metadata (handle_t *, struct buffer_head *);
+extern int   jbd2_add_jext(struct jbd2_inode *jinode, handle_t *handle,struct buffer_head *bh); //fJ
+extern int	 jbd2_check_dirty(struct buffer_head *bh); //fJ
 extern int	 jbd2_journal_forget (handle_t *, struct buffer_head *);
 extern int	 jbd2_journal_invalidatepage(journal_t *,
 				struct page *, unsigned int, unsigned int);
@@ -1501,6 +1580,17 @@ int jbd2_trans_will_send_data_barrier(journal_t *journal, tid_t tid);
 void __jbd2_log_wait_for_space(journal_t *journal);
 extern void __jbd2_journal_drop_transaction(journal_t *, transaction_t *);
 extern int jbd2_cleanup_journal_tail(journal_t *);
+
+/* FJ commit related APIs */
+int jbd2_fj_init(journal_t *journal, int num_fj_blks);
+int jbd2_fj_begin_commit(journal_t *journal, tid_t tid);
+int jbd2_fj_end_commit(journal_t *journal);
+int jbd2_fj_end_commit_fallback(journal_t *journal);
+int jbd2_fj_get_buf(journal_t *journal, struct buffer_head **bh_out, unsigned long long *retp);
+int jbd2_submit_inode_data(struct jbd2_inode *jinode);
+int jbd2_wait_inode_data(journal_t *journal, struct jbd2_inode *jinode);
+int jbd2_fj_wait_bufs(journal_t *journal, int num_blks);
+int jbd2_fj_release_bufs(journal_t *journal);
 
 /*
  * is_journal_abort

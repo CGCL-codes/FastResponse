@@ -247,6 +247,10 @@ int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
 int __ext4_handle_dirty_super(const char *where, unsigned int line,
 			      handle_t *handle, struct super_block *sb);
 
+int __ext4_add_jext(const char *where, unsigned int line, handle_t *handle, struct inode *inode, struct buffer_head *bh);	 //FJ
+
+int __ext4_check_dirty(const char *where, unsigned int line, struct buffer_head *bh); //FJ
+
 #define ext4_journal_get_write_access(handle, bh) \
 	__ext4_journal_get_write_access(__func__, __LINE__, (handle), (bh))
 #define ext4_forget(handle, is_metadata, inode, bh, block_nr) \
@@ -259,6 +263,12 @@ int __ext4_handle_dirty_super(const char *where, unsigned int line,
 				     (bh))
 #define ext4_handle_dirty_super(handle, sb) \
 	__ext4_handle_dirty_super(__func__, __LINE__, (handle), (sb))
+
+//iJ
+#define ext4_add_jext(handle, inode, bh) \
+				__ext4_add_jext(__func__, __LINE__, (handle), (inode), (bh))					 
+#define ext4_check_dirty(bh) \
+				__ext4_check_dirty(__func__, __LINE__, (bh))
 
 handle_t *__ext4_journal_start_sb(struct super_block *sb, unsigned int line,
 				  int type, int blocks, int rsv_blocks);

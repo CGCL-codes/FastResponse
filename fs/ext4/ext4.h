@@ -906,6 +906,7 @@ do {									       \
 #endif /* defined(__KERNEL__) || defined(__linux__) */
 
 #include "extents_status.h"
+#include "fj_commit.h"
 
 /*
  * Lock subclasses for i_data_sem in the ext4_inode_info structure.
@@ -962,6 +963,18 @@ struct ext4_inode_info {
 	struct rw_semaphore xattr_sem;
 
 	struct list_head i_orphan;	/* unlinked but open inodes */
+
+	/* fj commit related info */
+	struct list_head i_fj_list;	/*
+					 * inodes that need fj commit
+					 * protected by sbi->s_fj_lock.
+					 */
+
+	/* Number of ongoing updates on this inode */
+	atomic_t  i_fj_updates;
+
+	/* Fj commit wait queue for this inode */
+	wait_queue_head_t i_fj_wait;
 
 	/*
 	 * i_disksize keeps track of what the inode size is ON DISK, not
@@ -1084,6 +1097,9 @@ struct ext4_inode_info {
 #define	EXT4_VALID_FS			0x0001	/* Unmounted cleanly */
 #define	EXT4_ERROR_FS			0x0002	/* Errors detected */
 #define	EXT4_ORPHAN_FS			0x0004	/* Orphans being recovered */
+#define EXT4_FJ_COMMITTING		0x0008	/* File system underoing a fast
+						 * commit.
+						 */
 
 /*
  * Misc. filesystem flags
@@ -1535,7 +1551,35 @@ struct ext4_sb_info {
 	/* Barrier between changing inodes' journal flags and writepages ops. */
 	struct percpu_rw_semaphore s_journal_flag_rwsem;
 	struct dax_device *s_daxdev;
+
+	/* fj commit */
+	atomic_t s_fj_subtid;
+	/*
+	 * After commit starts, the main queue gets locked, and the further
+	 * updates get added in the staging queue.
+	 */
+#define FJ_Q_MAIN	0
+#define FJ_Q_STAGING	1
+	struct list_head s_fj_q[2];	/* Inodes staged for fj commit
+					 * that have data changes in them.
+					 */
+//	struct list_head s_fj_dentry_q[2];	/* directory entry updates */
+	unsigned int s_fj_bytes;
+	/*
+	 * Main fj commit lock. This lock protects accesses to the
+	 * following fields:
+	 * ei->i_fj_list, s_fj_dentry_q, s_fj_q.
+	 */
+	spinlock_t s_fj_lock;
 };
+
+typedef struct fsync_entry{
+	__be32 i_num;					//inode number
+	struct ext4_inode raw_inode;	//inode structure
+	char commit_flag;
+	char extent_block_index;		//fsync_entry:extent_block_index
+	char extra_head_index;			//one block may not have enough space for metadata
+}fsync_entry;
 
 static inline struct ext4_sb_info *EXT4_SB(struct super_block *sb)
 {
@@ -1568,6 +1612,7 @@ enum {
 	EXT4_STATE_MAY_INLINE_DATA,	/* may have in-inode data */
 	EXT4_STATE_EXT_PRECACHED,	/* extents have been precached */
 	EXT4_STATE_LUSTRE_EA_INODE,	/* Lustre-style ea_inode */
+	EXT4_STATE_FJ_COMMITTING,	/* Fj commit ongoing */
 };
 
 #define EXT4_INODE_BIT_FNS(name, field, offset)				\
@@ -2495,6 +2540,15 @@ extern void ext4_mark_bitmap_end(int start_bit, int end_bit, char *bitmap);
 extern int ext4_init_inode_table(struct super_block *sb,
 				 ext4_group_t group, int barrier);
 extern void ext4_end_bitmap_read(struct buffer_head *bh, int uptodate);
+
+/* fj_commit.c */
+void ext4_fj_init(struct super_block *sb, journal_t *journal);
+void ext4_fj_init_inode(struct inode *inode);
+void ext4_fj_track_inode(struct inode *inode);
+void ext4_fj_start_update(struct inode *inode);
+void ext4_fj_stop_update(struct inode *inode);
+void ext4_fj_del(struct inode *inode);
+int ext4_fj_commit(journal_t *journal, tid_t commit_tid);
 
 /* mballoc.c */
 extern const struct seq_operations ext4_mb_seq_groups_ops;
